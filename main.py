@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
-"""SKYWHALE — a giant whale breaches upward through a sea of clouds over a
-tiny city at golden sunset. One huge, instantly readable subject, a strong
-diagonal momentum (tail bottom-left -> head top-right), bold flat colours.
+"""SKYWHALE v2 — "THE BREACH": a giant whale explodes upward out of a sea
+of clouds over a tiny city at golden sunset, at the exact moment of the
+breach. One huge, instantly readable subject, a steeper diagonal momentum
+(tail bottom-left -> head top-right), a foam explosion where the body tears
+out of the clouds, a big spray fan at the blowhole, sun rays converging on
+the breach, and a tiny airplane crossing the top-right corner for scale.
 
 Pure Python 3 stdlib only: a scanline vector rasterizer (spans, ellipse
 spans, polygon fill) plus a zlib PNG encoder. No network, no external
@@ -35,17 +38,20 @@ SKY_STOPS = [
 SUN_GLOW = (255, 158, 87)
 SUN_MID = (255, 196, 107)
 SUN_CORE = (255, 233, 168)
+RAY = (255, 183, 102)       # sun-ray wedges
 CLOUD_BACK = (185, 168, 217)   # lavender shadow clouds
 CLOUD_MID = (255, 217, 168)    # peach clouds
 CLOUD_FRONT = (255, 246, 232)  # sunlit white clouds
+FOAM = (255, 252, 246)         # breach foam / big spray
+SPRAY = (235, 245, 252)
 WHALE_TOP = (31, 58, 95)       # deep navy back
 WHALE_BELLY = (232, 241, 247)  # pale belly
-WHALE_DARK = (16, 32, 56)      # mouth / eye
+WHALE_DARK = (16, 32, 56)      # eye
 RIM = (255, 196, 107)          # sunset rim light on the whale's top edge
-SPRAY = (235, 245, 252)
 CITY = (42, 27, 61)
 WINDOW = (255, 209, 102)
 BIRD = (43, 30, 66)
+PLANE = (30, 24, 52)
 
 
 # ---------------------------------------------------------------- canvas
@@ -115,6 +121,14 @@ class Canvas:
             for i in range(0, len(xs) - 1, 2):
                 self.span(y, xs[i], xs[i + 1] + 1, color)
 
+    def ring(self, cx, cy, rx, ry, color, width=10):
+        """Ellipse outline: discs along the ellipse perimeter."""
+        steps = int(2 * math.pi * max(rx, ry) / 9) + 24
+        for i in range(steps + 1):
+            a = 2 * math.pi * i / steps
+            self.disc(cx + math.cos(a) * rx, cy + math.sin(a) * ry,
+                      width / 2.0, color)
+
 
 # ---------------------------------------------------------------- scene
 def sky(canvas):
@@ -138,32 +152,37 @@ def bezier_deriv(p0, p1, p2, t):
             2 * (1 - t) * (p1[1] - p0[1]) + 2 * t * (p2[1] - p1[1]))
 
 
+# Whale spine: tail low-left, head high-right, steeper and fatter than v1.
+# The tail sits HIGH above the cloud sea (y ~770 vs clouds ~850) so the
+# flukes stay in open sky instead of drowning in the clouds.
+P0, P1, P2 = (300.0, 772.0), (450.0, 610.0), (795.0, 235.0)
+
+
+def whale_width(t):
+    # narrow tail stalk -> fat mid-body -> big rounded head
+    keys = [(0.0, 20), (0.15, 78), (0.45, 168), (0.70, 160),
+            (0.90, 126), (1.0, 86)]
+    for i in range(len(keys) - 1):
+        t0, w0 = keys[i]
+        t1, w1 = keys[i + 1]
+        if t0 <= t <= t1:
+            u = (t - t0) / (t1 - t0)
+            s = u * u * (3 - 2 * u)  # smoothstep: no kinks in the outline
+            return w0 + (w1 - w0) * s
+    return keys[-1][1]
+
+
 def whale_outline():
     """Body outline as a polygon: a fat arc, tail bottom-left, head top-right."""
-    p0, p1, p2 = (170.0, 860.0), (360.0, 800.0), (800.0, 300.0)
-
-    def width(t):
-        # narrow tail stalk -> fat mid-body -> big rounded head
-        keys = [(0.0, 16), (0.15, 62), (0.45, 148), (0.70, 142),
-                (0.90, 112), (1.0, 78)]
-        for i in range(len(keys) - 1):
-            t0, w0 = keys[i]
-            t1, w1 = keys[i + 1]
-            if t0 <= t <= t1:
-                u = (t - t0) / (t1 - t0)
-                s = u * u * (3 - 2 * u)  # smoothstep: no kinks in the outline
-                return w0 + (w1 - w0) * s
-        return keys[-1][1]
-
     left, right, centers, normals = [], [], [], []
     steps = 48
     for i in range(steps + 1):
         t = i / steps
-        cx, cy = bezier(p0, p1, p2, t)
-        dx, dy = bezier_deriv(p0, p1, p2, t)
+        cx, cy = bezier(P0, P1, P2, t)
+        dx, dy = bezier_deriv(P0, P1, P2, t)
         ln = math.hypot(dx, dy)
         nx, ny = -dy / ln, dx / ln  # normal; +n points up-left (sky side)
-        w = width(t)
+        w = whale_width(t)
         centers.append((cx, cy))
         normals.append((nx, ny))
         left.append((cx + nx * w, cy + ny * w))
@@ -171,19 +190,14 @@ def whale_outline():
     # rounded nose: semicircle around the head tip
     cx, cy = centers[-1]
     nx, ny = normals[-1]
-    w = width(1.0)
+    w = whale_width(1.0)
     nose = []
     for k in range(1, 9):
-        a = math.pi * k / 9.0  # sweep from +n side to -n side over the tip
-        px = cx + math.cos(a) * nx * w - math.sin(a) * (-ny) * w * 0.0
-        # point on the cap circle, rotated from +n toward the head direction
-        hx, hy = bezier_deriv(p0, p1, p2, 1.0)
-        hl = math.hypot(hx, hy)
-        hx, hy = hx / hl, hy / hl
+        a = math.pi * k / 9.0
         ang = math.atan2(ny, nx) - a  # from +n toward head direction
         nose.append((cx + math.cos(ang) * w, cy + math.sin(ang) * w))
     outline = left + nose + list(reversed(right))
-    return outline, centers, normals, width
+    return outline, centers, normals
 
 
 def draw(canvas):
@@ -202,6 +216,23 @@ def draw(canvas):
     canvas.disc(238, 198, 104, SUN_MID)
     canvas.disc(238, 198, 76, SUN_CORE)
 
+    # sun rays: SHORT thin wedges fanning down-right toward the breach,
+    # kept in the upper-left sky so they read as light, not sticks
+    sx, sy = 238, 198
+    for ang_deg, length, half_w in [
+        (14, 300, 6), (34, 340, 7), (54, 290, 6), (-12, 230, 5),
+    ]:
+        a = math.radians(ang_deg)
+        dx, dy = math.cos(a), math.sin(a)
+        px, py = -dy, dx
+        tip = (sx + dx * length, sy + dy * length)
+        base1 = (sx + px * half_w + dx * 95, sy + py * half_w + dy * 95)
+        base2 = (sx - px * half_w + dx * 95, sy - py * half_w + dy * 95)
+        canvas.polygon([base1, tip, base2], RAY)
+
+    # (no distant whale: every version read as a dark hill, not a whale,
+    # and the airplane + birds + city already carry the scale story)
+
     # a few high drifting clouds (puffy, not flat discs)
     for (cx, cy, rx, ry, col) in [
         (640, 150, 95, 34, CLOUD_FRONT), (700, 172, 70, 26, CLOUD_MID),
@@ -212,56 +243,66 @@ def draw(canvas):
 
     # sea of clouds the whale bursts out of (back layers first)
     for (cx, cy, rx, ry, col) in [
-        (80, 830, 260, 70, CLOUD_BACK), (420, 860, 300, 80, CLOUD_BACK),
-        (780, 840, 280, 75, CLOUD_BACK), (1010, 870, 220, 70, CLOUD_BACK),
-        (200, 900, 280, 75, CLOUD_MID), (560, 920, 320, 85, CLOUD_MID),
-        (900, 910, 300, 80, CLOUD_MID),
-        (60, 970, 300, 80, CLOUD_FRONT), (400, 985, 340, 85, CLOUD_FRONT),
-        (760, 975, 330, 85, CLOUD_FRONT), (1020, 980, 260, 80, CLOUD_FRONT),
+        (80, 860, 260, 70, CLOUD_BACK), (420, 880, 300, 80, CLOUD_BACK),
+        (780, 870, 280, 75, CLOUD_BACK), (1010, 890, 220, 70, CLOUD_BACK),
+        (200, 920, 280, 75, CLOUD_MID), (560, 940, 320, 85, CLOUD_MID),
+        (900, 930, 300, 80, CLOUD_MID),
+        (60, 985, 300, 80, CLOUD_FRONT), (400, 995, 340, 85, CLOUD_FRONT),
+        (760, 990, 330, 85, CLOUD_FRONT), (1020, 995, 260, 80, CLOUD_FRONT),
     ]:
         canvas.ellipse(cx, cy, rx, ry, col)
 
     # lumpy puffs on top of the sea so its horizon is bumpy, not a flat band
     for (cx, cy, rx, ry, col) in [
-        (40, 838, 130, 48, CLOUD_MID), (210, 822, 150, 54, CLOUD_FRONT),
-        (380, 842, 140, 46, CLOUD_MID), (540, 820, 160, 56, CLOUD_FRONT),
-        (720, 844, 145, 48, CLOUD_MID), (880, 824, 150, 52, CLOUD_FRONT),
-        (1010, 846, 120, 46, CLOUD_MID),
+        (40, 862, 130, 48, CLOUD_MID), (210, 848, 150, 54, CLOUD_FRONT),
+        (380, 866, 140, 46, CLOUD_MID), (540, 846, 160, 56, CLOUD_FRONT),
+        (720, 868, 145, 48, CLOUD_MID), (880, 850, 150, 52, CLOUD_FRONT),
+        (1010, 868, 120, 46, CLOUD_MID),
     ]:
         canvas.ellipse(cx, cy, rx, ry, col)
 
-    # ---- the whale ----
-    # +n points down-right (belly side); -n points up-left (back / sky side)
-    outline, centers, normals, width = whale_outline()
-    p0, p1, p2 = (170.0, 860.0), (360.0, 800.0), (800.0, 300.0)
+    # ---- THE BREACH: foam explosion where the body tears out of the
+    # cloud sea. Drawn BEFORE the whale, so the tail and flukes sit
+    # visibly ON TOP of the foam instead of drowning in it. ----
+    bx, by = 318, 878
+    canvas.ring(bx, by, 135, 38, FOAM, 15)
+    canvas.ring(bx, by, 92, 25, CLOUD_FRONT, 11)
+    # a rising column of foam hugging the tail
+    for (dx, dy, r) in [(0, -16, 24), (-26, -4, 18), (28, -2, 20),
+                        (-48, 10, 14), (52, 12, 13), (-10, -34, 16),
+                        (16, -28, 12)]:
+        canvas.disc(bx + dx, by + dy, r, FOAM)
+    # big flying droplets, clearly shaped (not speckle): chunky ellipses
+    for (dx, dy, rx, ry) in [
+        (-175, -48, 17, 11), (-138, -72, 13, 9), (-100, -88, 11, 8),
+        (155, -52, 16, 11), (190, -26, 12, 8), (118, -80, 11, 8),
+        (-198, -6, 10, 7), (210, 8, 9, 7), (82, -98, 9, 7),
+        (-55, -94, 8, 6), (55, -86, 8, 6),
+    ]:
+        canvas.ellipse(bx + dx, by + dy, rx, ry, FOAM)
 
-    # tail flukes (behind the body)
+    # ---- the whale ----
+    outline, centers, normals = whale_outline()
+
+    # tail flukes: TWO SEPARATE BROAD triangles fanning out from the tail
+    # end — wide lobes with a gap between them, so they read as flukes
+    # instead of one thin blade. Drawn on top of the foam.
     tx, ty = centers[0]
-    dx, dy = bezier_deriv(p0, p1, p2, 0.0)
-    ln = math.hypot(dx, dy)
-    dx, dy = dx / ln, dy / ln
-    px, py = -dy, dx  # perpendicular
-    flukes = [
-        (tx - dx * 78 + px * 62, ty - dy * 78 + py * 62),
-        (tx - dx * 34, ty - dy * 34),
-        (tx - dx * 82 - px * 58, ty - dy * 82 - py * 58),
-        (tx - dx * 18 - px * 26, ty - dy * 18 - py * 26),
-        (tx - dx * 14 + px * 22, ty - dy * 14 + py * 22),
-    ]
-    canvas.polygon(flukes, WHALE_TOP)
+    canvas.polygon([(tx, ty), (148, 728), (218, 826)], WHALE_TOP)
+    canvas.polygon([(tx, ty), (356, 916), (252, 862)], WHALE_TOP)
 
     # pectoral fin: a broad triangle rooted along the belly edge, sweeping
     # down-right so it reads as clearly attached
     def belly_point(t, frac):
-        cx, cy = bezier(p0, p1, p2, t)
-        dx, dy = bezier_deriv(p0, p1, p2, t)
+        cx, cy = bezier(P0, P1, P2, t)
+        dx, dy = bezier_deriv(P0, P1, P2, t)
         ln = math.hypot(dx, dy)
         nx, ny = -dy / ln, dx / ln
-        return (cx + nx * width(t) * frac, cy + ny * width(t) * frac)
+        return (cx + nx * whale_width(t) * frac, cy + ny * whale_width(t) * frac)
 
     b1 = belly_point(0.46, 0.85)
     b2 = belly_point(0.60, 0.85)
-    tip = ((b1[0] + b2[0]) / 2 + 36, (b1[1] + b2[1]) / 2 + 66)
+    tip = ((b1[0] + b2[0]) / 2 + 44, (b1[1] + b2[1]) / 2 + 78)
     canvas.polygon([b1, tip, b2], WHALE_TOP)
 
     # body
@@ -273,12 +314,14 @@ def draw(canvas):
         t = k / 48
         cx, cy = centers[k]
         nx, ny = normals[k]
-        belly.append((cx + nx * width(t) * 0.28, cy + ny * width(t) * 0.28))
+        belly.append((cx + nx * whale_width(t) * 0.28,
+                      cy + ny * whale_width(t) * 0.28))
     for k in range(46, 5, -1):
         t = k / 48
         cx, cy = centers[k]
         nx, ny = normals[k]
-        belly.append((cx + nx * width(t) * 0.88, cy + ny * width(t) * 0.88))
+        belly.append((cx + nx * whale_width(t) * 0.88,
+                      cy + ny * whale_width(t) * 0.88))
     canvas.polygon(belly, WHALE_BELLY)
 
     # sunset rim light along the top (back) edge: a continuous gold line
@@ -287,61 +330,64 @@ def draw(canvas):
         t = k / 48
         cx, cy = centers[k]
         nx, ny = normals[k]
-        rim_pts.append((cx - nx * (width(t) - 3), cy - ny * (width(t) - 3)))
+        rim_pts.append((cx - nx * (whale_width(t) - 3),
+                        cy - ny * (whale_width(t) - 3)))
     for j in range(len(rim_pts) - 1):
         canvas.line(rim_pts[j][0], rim_pts[j][1], rim_pts[j + 1][0],
                     rim_pts[j + 1][1], RIM, 6)
 
-    # mouth: a dark curve sweeping back from the nose along the belly side
-    mouth = []
-    for k in range(0, 13):
-        s = k / 12.0
-        tt = 0.995 - 0.075 * s
-        cx, cy = bezier(p0, p1, p2, tt)
-        dx, dy = bezier_deriv(p0, p1, p2, tt)
-        ln = math.hypot(dx, dy)
-        nx, ny = -dy / ln, dx / ln
-        mouth.append((cx + nx * width(tt) * (0.30 + 0.22 * s),
-                      cy + ny * width(tt) * (0.30 + 0.22 * s)))
-    for j in range(len(mouth) - 1):
-        canvas.line(mouth[j][0], mouth[j][1], mouth[j + 1][0],
-                    mouth[j + 1][1], WHALE_DARK, 6)
+    # no mouth line: every mouth curve tried read as a crack on the face,
+    # so the whale stays clean with just the big eye (flat-style craft
+    # beats a misleading feature)
 
-    # eye, with a glint (on the back side of the head)
+    # eye: BIGGER, with a glint (on the back side of the head)
     ex, ey = centers[44]
     nx, ny = normals[44]
-    ex -= nx * width(44 / 48) * 0.38
-    ey -= ny * width(44 / 48) * 0.38
-    canvas.disc(ex, ey, 11, WHALE_DARK)
-    canvas.disc(ex + 3, ey - 3, 3, (255, 255, 255))
+    ex -= nx * whale_width(44 / 48) * 0.38
+    ey -= ny * whale_width(44 / 48) * 0.38
+    canvas.disc(ex, ey, 15, WHALE_DARK)
+    canvas.disc(ex + 5, ey - 5, 4, (255, 255, 255))
 
-    # spray bursting from the blowhole / around the nose: a tight fan of
-    # droplets, no long straight streaks
+    # ---- spray bursting from the blowhole: a BIG fan of large droplets
+    # plus three sweeping arcs, so it reads as an explosion, not noise ----
     hx, hy = centers[-1]
-    for _ in range(56):
-        a = rng.uniform(-2.7, -0.4)
-        d = rng.uniform(14, 95)
-        r = rng.uniform(2, 6)
-        canvas.disc(hx + math.cos(a) * d + rng.uniform(-6, 6),
-                    hy + math.sin(a) * d * 0.75 + rng.uniform(-5, 5),
+    for a in (-2.5, -2.0, -1.5, -1.0, -0.5):
+        # arc streaks fanning out from the blowhole
+        canvas.line(hx + math.cos(a) * 30, hy + math.sin(a) * 22,
+                    hx + math.cos(a) * 105, hy + math.sin(a) * 78,
+                    SPRAY, 7)
+    for _ in range(34):
+        a = rng.uniform(-2.8, -0.3)
+        d = rng.uniform(24, 130)
+        r = rng.uniform(5, 13)  # large, clearly shaped droplets
+        canvas.disc(hx + math.cos(a) * d + rng.uniform(-8, 8),
+                    hy + math.sin(a) * d * 0.75 + rng.uniform(-6, 6),
                     r, SPRAY)
-    for a in (-2.2, -1.7, -1.2):
-        canvas.line(hx + math.cos(a) * 26, hy + math.sin(a) * 20,
-                    hx + math.cos(a) * 62, hy + math.sin(a) * 48,
-                    SPRAY, 4)
+    # a few hero droplets: big teardrops above the head
+    for (dx, dy, rx, ry) in [(-30, -120, 16, 11), (25, -135, 14, 10),
+                             (75, -105, 12, 9), (-75, -95, 11, 8)]:
+        canvas.ellipse(hx + dx, hy + dy, rx, ry, FOAM)
 
     # foreground cloud puffs where the tail dives back into the sea
-    for (cx, cy, rx, ry) in [(170, 905, 120, 36), (280, 945, 110, 32),
-                             (70, 950, 100, 32)]:
+    # (kept low and to the sides so the flukes stay visible)
+    for (cx, cy, rx, ry) in [(120, 950, 120, 36), (260, 975, 110, 32),
+                             (60, 990, 100, 32)]:
         canvas.ellipse(cx, cy, rx, ry, CLOUD_FRONT)
 
     # ---- tiny city at the very bottom, dwarfed by the whale ----
+    # taller towers now, so the scale twist reads at a glance
     x = -10
     while x < W + 10:
         bw = rng.randint(38, 86)
-        bh = rng.randint(36, 88)
+        bh = rng.randint(48, 118)
+        if rng.random() < 0.12:
+            bh = rng.randint(120, 150)  # landmark tower
         canvas.polygon([(x, H), (x, H - bh), (x + bw, H - bh), (x + bw, H)],
                        CITY)
+        if bh > 118:  # antenna on the landmark towers
+            canvas.line(x + bw / 2, H - bh, x + bw / 2, H - bh - 22,
+                        CITY, 4)
+            canvas.disc(x + bw / 2, H - bh - 24, 3, WINDOW)
         # lit windows
         for wy in range(H - bh + 8, H - 8, 13):
             for wx in range(x + 7, x + bw - 6, 12):
@@ -350,9 +396,20 @@ def draw(canvas):
                     canvas.span(wy + 1, wx, wx + 4, WINDOW)
         x += bw + rng.randint(4, 18)
 
+    # ---- tiny airplane crossing the top-right corner, dwarfed by the
+    # whale's nose: a small clean silhouette, well clear of the whale ----
+    ax, ay = 930, 105
+    # fuselage (tilted), one swept main wing below, small tail fin
+    canvas.line(ax - 30, ay + 9, ax + 30, ay - 9, PLANE, 8)
+    canvas.line(ax - 2, ay + 1, ax + 6, ay + 24, PLANE, 6)
+    canvas.line(ax + 24, ay - 7, ax + 34, ay - 20, PLANE, 5)
+    for k in range(3):
+        canvas.disc(ax - 12 + k * 11, ay + 1 - k * 3, 2, WINDOW)
+    canvas.line(ax - 33, ay + 10, ax - 88, ay + 26, SPRAY, 3)
+
     # birds, tiny chevrons fleeing the whale's path
     for (bx, by, s) in [(560, 210, 16), (610, 175, 12), (505, 150, 11),
-                        (880, 180, 14), (700, 120, 10)]:
+                        (700, 120, 10), (640, 320, 13), (480, 260, 10)]:
         canvas.line(bx - s, by, bx, by - s * 0.55, BIRD, 4)
         canvas.line(bx, by - s * 0.55, bx + s, by, BIRD, 4)
 
